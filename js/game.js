@@ -22,6 +22,9 @@ let gameTime = 0;
 let timerInterval = null;
 let bestScores = JSON.parse(localStorage.getItem('spoonman_best_scores')) || [];
 let totalKills = 0;
+let playerTeleporting = false;
+let teleportPhase = 0; // 0 = normal, 1 = fading out, 2 = fading in
+let levelStartTime = 0;
 
 // Состояние игры
 let g = {
@@ -54,12 +57,12 @@ let g = {
 // ТАЙМЕР ИГРЫ
 // ========================================
 function startTimer() {
-  gameStartTime = Date.now();
   if (timerInterval) clearInterval(timerInterval);
+  levelStartTime = Date.now();
   
   timerInterval = setInterval(() => {
     if (!gamePaused && g.state === 'playing') {
-      gameTime = Math.floor((Date.now() - gameStartTime) / 1000);
+      gameTime = Math.floor((Date.now() - levelStartTime) / 1000);
       updateTimerDisplay();
     }
   }, 1000);
@@ -175,16 +178,30 @@ for (let layer = 0; layer < layers; layer++) {
   // ДИНАМИЧЕСКАЯ ПЛОТНОСТЬ СТЕН
   const wallChance = LEVEL_CONFIG.wallDensity[g.level] || LEVEL_CONFIG.wallDensity.default;
   
-  // Разрушаемые стены
-  for (let y = startOffset; y < H - startOffset; y++) {
-    for (let x = startOffset; x < W - startOffset; x++) {
-      const isStartZone = (x < startOffset + 3) && (y < startOffset + 3);
+  /// Разрушаемые стены (БЕЗ мёртвых зон!)
+for (let y = startOffset; y < H - startOffset; y++) {
+  for (let x = startOffset; x < W - startOffset; x++) {
+    const isStartZone = (x < startOffset + 3) && (y < startOffset + 3);
+    
+    if (gr[y][x] === 0 && !isStartZone && Math.random() < wallChance) {
+      // Проверка: есть ли доступ с хотя бы 1 стороны?
+      const neighbors = [
+        [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1],
+        [x - 1, y - 1], [x + 1, y - 1], [x - 1, y + 1], [x + 1, y + 1] // Диагонали
+      ];
       
-      if (gr[y][x] === 0 && !isStartZone && Math.random() < wallChance) {
-        gr[y][x] = 2; // Разрушаемая стена
+      const hasAccess = neighbors.some(([nx, ny]) => {
+        if (nx < startOffset || nx >= W - startOffset || 
+            ny < startOffset || ny >= H - startOffset) return false;
+        return gr[ny][nx] === 0;
+      });
+      
+      if (hasAccess) {
+        gr[y][x] = 2;
       }
     }
   }
+}
   
   // Создаём выход
   const doorCandidates = [];
@@ -300,35 +317,39 @@ if (g.grid[startY][startX] !== 0) {
   g.bots = generateBots();
   g.lastMove = 0;
   
+  // Сброс таймера на каждом уровне
+if (timerInterval) clearInterval(timerInterval);
+gameTime = 0;
+startTimer();
+
   updateUI();
   updateDetonatorIndicator();
 }
 
+
 // ========================================
-// ПРОВЕРКА ВОЗМОЖНОСТИ ДВИЖЕНИЯ
-// ========================================
-// ========================================
-// ПРОВЕРКА ВОЗМОЖНОСТИ ДВИЖЕНИЯ + ТЕЛЕПОРТАЦИЯ
+// ПРОВЕРКА ВОЗМОЖНОСТИ ДВИЖЕНИЯ (ИСПРАВЛЕНО)
 // ========================================
 function canMove(x, y, isBot = false) {
-  // ТЕЛЕПОРТАЦИЯ: Если нет стен и вышли за границу
+  // ТЕЛЕПОРТАЦИЯ: Разрешаем выход за границы карты
   const layers = WALL_CONFIG.borderLayers[g.level] || WALL_CONFIG.borderLayers.default;
   const teleportActive = layers === 0 && WALL_CONFIG.teleportEnabled;
   
-  if (teleportActive) {
-    // НЕ блокируем выход за границы - телепортация обработается в updatePlayer/updateBots
-    return true;
+  // Если вышли за границы И телепортация включена - разрешаем (телепортация обработается отдельно)
+  if (teleportActive && (x < 0 || x >= W || y < 0 || y >= H)) {
+    return true; // Разрешаем только выход ЗА карту
   }
   
-  // Обычная проверка границ
+  // Обычная проверка границ (без телепортации)
   if (x < 0 || x >= W || y < 0 || y >= H) return false;
   
+  // ✅ ВСЕГДА проверяем коллизии с блоками внутри карты
   const cell = g.grid[y][x];
   
-  if (cell === 1 || cell === 2) return false;
-  if (!isBot && cell === 3 && !g.doorVis) return false;
-  if (isBot && cell === 3) return false;
-  if (g.bombs.some(b => !b.ex && b.x === x && b.y === y)) return false;
+  if (cell === 1 || cell === 2) return false; // Стены
+  if (!isBot && cell === 3 && !g.doorVis) return false; // Закрытая дверь
+  if (isBot && cell === 3) return false; // Боты не могут в дверь
+  if (g.bombs.some(b => !b.ex && b.x === x && b.y === y)) return false; // Бомбы
   
   return true;
 }
@@ -564,6 +585,21 @@ function getExplosionCells(x, y, range) {
 // ОБНОВЛЕНИЕ ИГРОКА
 // ========================================
 function updatePlayer() {
+  // Блокировка во время анимаций
+  if (playerTeleporting || g.state === 'entering_door') {
+    if (VISUAL_CONFIG.smoothMovement) {
+      if (g.p.x !== g.p.tx) {
+        g.p.x += (g.p.tx - g.p.x) / VISUAL_CONFIG.smoothFactor;
+        if (Math.abs(g.p.tx - g.p.x) < 0.01) g.p.x = g.p.tx;
+      }
+      if (g.p.y !== g.p.ty) {
+        g.p.y += (g.p.ty - g.p.y) / VISUAL_CONFIG.smoothFactor;
+        if (Math.abs(g.p.ty - g.p.y) < 0.01) g.p.y = g.p.ty;
+      }
+    }
+    return;
+  }
+  
   if (g.state !== 'playing' || gamePaused) return;
   
   if (VISUAL_CONFIG.smoothMovement) {
@@ -587,34 +623,64 @@ function updatePlayer() {
   if (g.keys['ArrowLeft'] || g.keys['a'] || g.keys['A']) dx = -1;
   if (g.keys['ArrowRight'] || g.keys['d'] || g.keys['D']) dx = 1;
   
-if (dx || dy) {
-  let nx = Math.round(g.p.x) + dx;
-  let ny = Math.round(g.p.y) + dy;
-  
-  // ТЕЛЕПОРТАЦИЯ
-  const layers = WALL_CONFIG.borderLayers[g.level] || WALL_CONFIG.borderLayers.default;
-  if (layers === 0 && WALL_CONFIG.teleportEnabled) {
-    const teleported = teleport(nx, ny);
-    nx = teleported.x;
-    ny = teleported.y;
+  if (dx || dy) {
+    let nx = Math.round(g.p.x) + dx;
+    let ny = Math.round(g.p.y) + dy;
     
-    // Эффект телепортации
-    if (WALL_CONFIG.teleportEffect && (nx !== Math.round(g.p.x) + dx || ny !== Math.round(g.p.y) + dy)) {
-      for (let i = 0; i < 15; i++) {
-        g.parts.push({
-          x: g.p.x * CELL + CELL / 2,
-          y: g.p.y * CELL + CELL / 2,
-          vx: (Math.random() - 0.5) * 8,
-          vy: (Math.random() - 0.5) * 8,
-          life: 30,
-          col: '#00f5ff',
-          size: 4
-        });
+    // ТЕЛЕПОРТАЦИЯ С АНИМАЦИЕЙ
+    const layers = WALL_CONFIG.borderLayers[g.level] || WALL_CONFIG.borderLayers.default;
+    if (layers === 0 && WALL_CONFIG.teleportEnabled) {
+      const willTeleport = nx < 0 || nx >= W || ny < 0 || ny >= H;
+      
+      if (willTeleport) {
+        playerTeleporting = true;
+        teleportPhase = 1;
+        
+        // Эффект на точке выхода
+        const exitX = nx < 0 ? 0 : (nx >= W ? W - 1 : nx);
+        const exitY = ny < 0 ? 0 : (ny >= H ? H - 1 : ny);
+        for (let i = 0; i < 20; i++) {
+          g.parts.push({
+            x: exitX * CELL + CELL / 2,
+            y: exitY * CELL + CELL / 2,
+            vx: (Math.random() - 0.5) * 8,
+            vy: (Math.random() - 0.5) * 8,
+            life: 35,
+            col: '#00f5ff',
+            size: 4
+          });
+        }
+        
+        setTimeout(() => {
+          const teleported = teleport(nx, ny);
+          g.p.x = g.p.tx = teleported.x;
+          g.p.y = g.p.ty = teleported.y;
+          teleportPhase = 2;
+          
+          // Эффект на точке входа
+          for (let i = 0; i < 20; i++) {
+            g.parts.push({
+              x: g.p.x * CELL + CELL / 2,
+              y: g.p.y * CELL + CELL / 2,
+              vx: (Math.random() - 0.5) * 8,
+              vy: (Math.random() - 0.5) * 8,
+              life: 35,
+              col: '#00ffaa',
+              size: 4
+            });
+          }
+          
+          setTimeout(() => {
+            playerTeleporting = false;
+            teleportPhase = 0;
+          }, 200);
+        }, 200);
+        
+        return;
       }
     }
-  }
-  
-  if (canMove(nx, ny)) {
+    
+    if (canMove(nx, ny)) {
       g.p.tx = nx;
       g.p.ty = ny;
       g.lastMove = now;
@@ -630,6 +696,7 @@ if (dx || dy) {
         });
       }
       
+      // Сбор бонусов
       g.pups = g.pups.filter(p => {
         if (p.x === nx && p.y === ny) {
           if (p.t === 'bomb' && g.p.bombs < PLAYER_CONFIG.maxBombs) g.p.bombs++;
@@ -662,19 +729,35 @@ if (dx || dy) {
         return true;
       });
       
-      // ИСПРАВЛЕННАЯ ЛОГИКА ВЫХОДА
+      // ВХОД В ДВЕРЬ С АНИМАЦИЕЙ
       if (g.doorVis && g.doorPos && nx === g.doorPos.x && ny === g.doorPos.y) {
         const isEarlyLevel = LEVEL_CONFIG.exitConditions.earlyExit.includes(g.level);
         const canExit = isEarlyLevel || g.bots.length === 0;
         
-        if (canExit) {
-          g.state = 'win';
-          g.score += g.level * LEVEL_CONFIG.levelClearBonus;
-          showModal('ПОБЕДА!', g.score, 'ДАЛЬШЕ', () => {
-            g.level++;
-            init();
-            if (!timerInterval) startTimer();
-          });
+        if (canExit && g.state === 'playing') {
+          g.state = 'entering_door';
+          
+          // Эффект входа
+          for (let i = 0; i < 50; i++) {
+            g.parts.push({
+              x: nx * CELL + CELL / 2,
+              y: ny * CELL + CELL / 2,
+              vx: (Math.random() - 0.5) * 10,
+              vy: (Math.random() - 0.5) * 10,
+              life: 60,
+              col: isEarlyLevel ? '#00ff00' : '#ffd700',
+              size: Math.random() * 8 + 2
+            });
+          }
+          
+          setTimeout(() => {
+            g.state = 'win';
+            g.score += g.level * LEVEL_CONFIG.levelClearBonus;
+            showModal('ПОБЕДА!', g.score, 'ДАЛЬШЕ', () => {
+              g.level++;
+              init();
+            });
+          }, 600);
         }
       }
       
@@ -1152,53 +1235,60 @@ g.bombs.forEach(b => {
     }
   });
   
-  // Игрок
-  const playerX = g.p.x * CELL + CELL / 2;
-  const playerY = g.p.y * CELL + CELL / 2;
-  
-  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+// Игрок
+const playerX = g.p.x * CELL + CELL / 2;
+const playerY = g.p.y * CELL + CELL / 2;
+
+// Эффект телепортации
+let playerAlpha = 1;
+if (teleportPhase === 1) playerAlpha = 0.2;
+if (teleportPhase === 2) playerAlpha = 0.6;
+
+ctx.globalAlpha = playerAlpha;
+
+ctx.fillStyle = 'rgba(0,0,0,0.5)';
+ctx.beginPath();
+ctx.arc(playerX + 5, playerY + 5, CELL / 3 + 2, 0, Math.PI * 2);
+ctx.fill();
+
+if (VISUAL_CONFIG.gradients) {
+  const playerGrd = ctx.createRadialGradient(playerX, playerY, 0, playerX, playerY, CELL / 2);
+  playerGrd.addColorStop(0, '#00f5ff');
+  playerGrd.addColorStop(0.7, '#0099cc');
+  playerGrd.addColorStop(1, '#006688');
+  ctx.fillStyle = playerGrd;
+} else {
+  ctx.fillStyle = '#00f5ff';
+}
+
+if (PLAYER_CONFIG.glowEffect) {
+  ctx.shadowBlur = 30 * playerAlpha;
+  ctx.shadowColor = '#00f5ff';
+}
+ctx.beginPath();
+ctx.arc(playerX, playerY, CELL / 3, 0, Math.PI * 2);
+ctx.fill();
+
+ctx.fillStyle = '#ffffff';
+ctx.globalAlpha = 0.8 * playerAlpha;
+ctx.beginPath();
+ctx.arc(playerX - 6, playerY - 6, 6, 0, Math.PI * 2);
+ctx.fill();
+ctx.globalAlpha = playerAlpha;
+
+if (g.p.det) {
+  ctx.globalAlpha = (0.2 + 0.1 * Math.sin(Date.now() / 300)) * playerAlpha;
+  ctx.strokeStyle = '#ff00ff';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([5, 5]);
   ctx.beginPath();
-  ctx.arc(playerX + 5, playerY + 5, CELL / 3 + 2, 0, Math.PI * 2);
-  ctx.fill();
-  
-  if (VISUAL_CONFIG.gradients) {
-    const playerGrd = ctx.createRadialGradient(playerX, playerY, 0, playerX, playerY, CELL / 2);
-    playerGrd.addColorStop(0, '#00f5ff');
-    playerGrd.addColorStop(0.7, '#0099cc');
-    playerGrd.addColorStop(1, '#006688');
-    ctx.fillStyle = playerGrd;
-  } else {
-    ctx.fillStyle = '#00f5ff';
-  }
-  
-  if (PLAYER_CONFIG.glowEffect) {
-    ctx.shadowBlur = 30;
-    ctx.shadowColor = '#00f5ff';
-  }
-  ctx.beginPath();
-  ctx.arc(playerX, playerY, CELL / 3, 0, Math.PI * 2);
-  ctx.fill();
-  
-  ctx.fillStyle = '#ffffff';
-  ctx.globalAlpha = 0.8;
-  ctx.beginPath();
-  ctx.arc(playerX - 6, playerY - 6, 6, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 1;
-  
-  if (g.p.det) {
-    ctx.globalAlpha = 0.2 + 0.1 * Math.sin(Date.now() / 300);
-    ctx.strokeStyle = '#ff00ff';
-    ctx.lineWidth = 3;
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.arc(playerX, playerY, CELL / 3 + 8, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
-  }
-  
-  ctx.shadowBlur = 0;
+  ctx.arc(playerX, playerY, CELL / 3 + 8, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+ctx.globalAlpha = 1;
+ctx.shadowBlur = 0;
 }
 
 function drawHexagon(x, y, size) {
