@@ -16,14 +16,14 @@ const H = GAME_CONFIG.mapHeight;
 canvas.width = W * CELL;
 canvas.height = H * CELL;
 
+let playerTeleporting = false;
+let teleportPhase = 0;
 let gamePaused = false;
 let gameStartTime = Date.now();
 let gameTime = 0;
 let timerInterval = null;
 let bestScores = JSON.parse(localStorage.getItem('spoonman_best_scores')) || [];
 let totalKills = 0;
-let playerTeleporting = false;
-let teleportPhase = 0; // 0 = normal, 1 = fading out, 2 = fading in
 let levelStartTime = 0;
 
 // Состояние игры
@@ -184,19 +184,27 @@ for (let y = startOffset; y < H - startOffset; y++) {
     const isStartZone = (x < startOffset + 3) && (y < startOffset + 3);
     
     if (gr[y][x] === 0 && !isStartZone && Math.random() < wallChance) {
-      // Проверка: есть ли доступ с хотя бы 1 стороны?
+      // Проверка доступности со ВСЕХ сторон (включая диагонали)
       const neighbors = [
-        [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1],
-        [x - 1, y - 1], [x + 1, y - 1], [x - 1, y + 1], [x + 1, y + 1] // Диагонали
+        [x - 1, y],     [x + 1, y],     // Лево, право
+        [x, y - 1],     [x, y + 1],     // Верх, низ
+        [x - 1, y - 1], [x + 1, y - 1], // Диагонали верх
+        [x - 1, y + 1], [x + 1, y + 1]  // Диагонали низ
       ];
       
-      const hasAccess = neighbors.some(([nx, ny]) => {
+      let accessibleCount = 0;
+      for (let [nx, ny] of neighbors) {
         if (nx < startOffset || nx >= W - startOffset || 
-            ny < startOffset || ny >= H - startOffset) return false;
-        return gr[ny][nx] === 0;
-      });
+            ny < startOffset || ny >= H - startOffset) continue;
+        
+        // Считаем пустые клетки и двери
+        if (gr[ny][nx] === 0 || gr[ny][nx] === 3) {
+          accessibleCount++;
+        }
+      }
       
-      if (hasAccess) {
+      // Ставим стену только если есть доступ хотя бы с 2 сторон
+      if (accessibleCount >= 2) {
         gr[y][x] = 2;
       }
     }
@@ -331,25 +339,17 @@ startTimer();
 // ПРОВЕРКА ВОЗМОЖНОСТИ ДВИЖЕНИЯ (ИСПРАВЛЕНО)
 // ========================================
 function canMove(x, y, isBot = false) {
-  // ТЕЛЕПОРТАЦИЯ: Разрешаем выход за границы карты
-  const layers = WALL_CONFIG.borderLayers[g.level] || WALL_CONFIG.borderLayers.default;
-  const teleportActive = layers === 0 && WALL_CONFIG.teleportEnabled;
-  
-  // Если вышли за границы И телепортация включена - разрешаем (телепортация обработается отдельно)
-  if (teleportActive && (x < 0 || x >= W || y < 0 || y >= H)) {
-    return true; // Разрешаем только выход ЗА карту
+  // Проверка границ карты
+  if (x < 0 || x >= W || y < 0 || y >= H) {
+    return false; // ❌ НЕ разрешаем выход за границы здесь!
   }
   
-  // Обычная проверка границ (без телепортации)
-  if (x < 0 || x >= W || y < 0 || y >= H) return false;
-  
-  // ✅ ВСЕГДА проверяем коллизии с блоками внутри карты
   const cell = g.grid[y][x];
   
-  if (cell === 1 || cell === 2) return false; // Стены
-  if (!isBot && cell === 3 && !g.doorVis) return false; // Закрытая дверь
-  if (isBot && cell === 3) return false; // Боты не могут в дверь
-  if (g.bombs.some(b => !b.ex && b.x === x && b.y === y)) return false; // Бомбы
+  if (cell === 1 || cell === 2) return false;
+  if (!isBot && cell === 3 && !g.doorVis) return false;
+  if (isBot && cell === 3) return false;
+  if (g.bombs.some(b => !b.ex && b.x === x && b.y === y)) return false;
   
   return true;
 }
@@ -627,59 +627,94 @@ function updatePlayer() {
     let nx = Math.round(g.p.x) + dx;
     let ny = Math.round(g.p.y) + dy;
     
-    // ТЕЛЕПОРТАЦИЯ С АНИМАЦИЕЙ
+    // ТЕЛЕПОРТАЦИЯ: проверяем ПЕРЕД canMove
     const layers = WALL_CONFIG.borderLayers[g.level] || WALL_CONFIG.borderLayers.default;
-    if (layers === 0 && WALL_CONFIG.teleportEnabled) {
-      const willTeleport = nx < 0 || nx >= W || ny < 0 || ny >= H;
+    const teleportActive = layers === 0 && WALL_CONFIG.teleportEnabled;
+    
+    if (teleportActive && (nx < 0 || nx >= W || ny < 0 || ny >= H)) {
+      // ТЕЛЕПОРТАЦИЯ С АНИМАЦИЕЙ
+      playerTeleporting = true;
+      teleportPhase = 1;
       
-      if (willTeleport) {
-        playerTeleporting = true;
-        teleportPhase = 1;
+      // Вычисляем финальную позицию
+      let targetX = nx < 0 ? W - 1 : (nx >= W ? 0 : nx);
+      let targetY = ny < 0 ? H - 1 : (ny >= H ? 0 : ny);
+      
+      // Проверяем что целевая клетка свободна
+      if (!canMove(targetX, targetY)) {
+        // Если целевая клетка занята - ищем ближайшую свободную
+        let found = false;
+        for (let offset = 1; offset <= 3 && !found; offset++) {
+          const positions = [
+            [targetX + offset, targetY],
+            [targetX - offset, targetY],
+            [targetX, targetY + offset],
+            [targetX, targetY - offset]
+          ];
+          
+          for (let [tx, ty] of positions) {
+            if (tx >= 0 && tx < W && ty >= 0 && ty < H && canMove(tx, ty)) {
+              targetX = tx;
+              targetY = ty;
+              found = true;
+              break;
+            }
+          }
+        }
         
-        // Эффект на точке выхода
-        const exitX = nx < 0 ? 0 : (nx >= W ? W - 1 : nx);
-        const exitY = ny < 0 ? 0 : (ny >= H ? H - 1 : ny);
+        if (!found) {
+          // Если не нашли свободное место - отменяем телепортацию
+          playerTeleporting = false;
+          teleportPhase = 0;
+          return;
+        }
+      }
+      
+      // Эффект на точке выхода
+      const exitX = g.p.x;
+      const exitY = g.p.y;
+      for (let i = 0; i < 20; i++) {
+        g.parts.push({
+          x: exitX * CELL + CELL / 2,
+          y: exitY * CELL + CELL / 2,
+          vx: (Math.random() - 0.5) * 8,
+          vy: (Math.random() - 0.5) * 8,
+          life: 30,
+          col: '#00f5ff',
+          size: 4
+        });
+      }
+      
+      setTimeout(() => {
+        // Телепортация
+        g.p.x = g.p.tx = targetX;
+        g.p.y = g.p.ty = targetY;
+        teleportPhase = 2;
+        
+        // Эффект на точке входа
         for (let i = 0; i < 20; i++) {
           g.parts.push({
-            x: exitX * CELL + CELL / 2,
-            y: exitY * CELL + CELL / 2,
+            x: targetX * CELL + CELL / 2,
+            y: targetY * CELL + CELL / 2,
             vx: (Math.random() - 0.5) * 8,
             vy: (Math.random() - 0.5) * 8,
-            life: 35,
-            col: '#00f5ff',
+            life: 30,
+            col: '#00ffaa',
             size: 4
           });
         }
         
         setTimeout(() => {
-          const teleported = teleport(nx, ny);
-          g.p.x = g.p.tx = teleported.x;
-          g.p.y = g.p.ty = teleported.y;
-          teleportPhase = 2;
-          
-          // Эффект на точке входа
-          for (let i = 0; i < 20; i++) {
-            g.parts.push({
-              x: g.p.x * CELL + CELL / 2,
-              y: g.p.y * CELL + CELL / 2,
-              vx: (Math.random() - 0.5) * 8,
-              vy: (Math.random() - 0.5) * 8,
-              life: 35,
-              col: '#00ffaa',
-              size: 4
-            });
-          }
-          
-          setTimeout(() => {
-            playerTeleporting = false;
-            teleportPhase = 0;
-          }, 200);
-        }, 200);
-        
-        return;
-      }
+          playerTeleporting = false;
+          teleportPhase = 0;
+        }, 150);
+      }, 150);
+      
+      g.lastMove = now;
+      return;
     }
     
+    // ОБЫЧНОЕ ДВИЖЕНИЕ
     if (canMove(nx, ny)) {
       g.p.tx = nx;
       g.p.ty = ny;
@@ -757,7 +792,7 @@ function updatePlayer() {
               g.level++;
               init();
             });
-          }, 600);
+          }, 500); // ✅ 500ms как ты просил
         }
       }
       
@@ -1236,60 +1271,61 @@ g.bombs.forEach(b => {
   });
   
 // Игрок
-const playerX = g.p.x * CELL + CELL / 2;
-const playerY = g.p.y * CELL + CELL / 2;
-
-// Эффект телепортации
-let playerAlpha = 1;
-if (teleportPhase === 1) playerAlpha = 0.2;
-if (teleportPhase === 2) playerAlpha = 0.6;
-
-ctx.globalAlpha = playerAlpha;
-
-ctx.fillStyle = 'rgba(0,0,0,0.5)';
-ctx.beginPath();
-ctx.arc(playerX + 5, playerY + 5, CELL / 3 + 2, 0, Math.PI * 2);
-ctx.fill();
-
-if (VISUAL_CONFIG.gradients) {
-  const playerGrd = ctx.createRadialGradient(playerX, playerY, 0, playerX, playerY, CELL / 2);
-  playerGrd.addColorStop(0, '#00f5ff');
-  playerGrd.addColorStop(0.7, '#0099cc');
-  playerGrd.addColorStop(1, '#006688');
-  ctx.fillStyle = playerGrd;
-} else {
-  ctx.fillStyle = '#00f5ff';
-}
-
-if (PLAYER_CONFIG.glowEffect) {
-  ctx.shadowBlur = 30 * playerAlpha;
-  ctx.shadowColor = '#00f5ff';
-}
-ctx.beginPath();
-ctx.arc(playerX, playerY, CELL / 3, 0, Math.PI * 2);
-ctx.fill();
-
-ctx.fillStyle = '#ffffff';
-ctx.globalAlpha = 0.8 * playerAlpha;
-ctx.beginPath();
-ctx.arc(playerX - 6, playerY - 6, 6, 0, Math.PI * 2);
-ctx.fill();
-ctx.globalAlpha = playerAlpha;
-
-if (g.p.det) {
-  ctx.globalAlpha = (0.2 + 0.1 * Math.sin(Date.now() / 300)) * playerAlpha;
-  ctx.strokeStyle = '#ff00ff';
-  ctx.lineWidth = 3;
-  ctx.setLineDash([5, 5]);
+// Игрок
+if (teleportPhase !== 1) { // ✅ НЕ рисуем во время fade out
+  const playerX = g.p.x * CELL + CELL / 2;
+  const playerY = g.p.y * CELL + CELL / 2;
+  
+  let playerAlpha = 1;
+  if (teleportPhase === 2) playerAlpha = 0.5; // Fade in
+  
+  ctx.globalAlpha = playerAlpha;
+  
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
   ctx.beginPath();
-  ctx.arc(playerX, playerY, CELL / 3 + 8, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
-}
-
-ctx.globalAlpha = 1;
-ctx.shadowBlur = 0;
-}
+  ctx.arc(playerX + 5, playerY + 5, CELL / 3 + 2, 0, Math.PI * 2);
+  ctx.fill();
+  
+  if (VISUAL_CONFIG.gradients) {
+    const playerGrd = ctx.createRadialGradient(playerX, playerY, 0, playerX, playerY, CELL / 2);
+    playerGrd.addColorStop(0, '#00f5ff');
+    playerGrd.addColorStop(0.7, '#0099cc');
+    playerGrd.addColorStop(1, '#006688');
+    ctx.fillStyle = playerGrd;
+  } else {
+    ctx.fillStyle = '#00f5ff';
+  }
+  
+  if (PLAYER_CONFIG.glowEffect) {
+    ctx.shadowBlur = 30 * playerAlpha;
+    ctx.shadowColor = '#00f5ff';
+  }
+  ctx.beginPath();
+  ctx.arc(playerX, playerY, CELL / 3, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.8 * playerAlpha;
+  ctx.beginPath();
+  ctx.arc(playerX - 6, playerY - 6, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = playerAlpha;
+  
+  if (g.p.det) {
+    ctx.globalAlpha = (0.2 + 0.1 * Math.sin(Date.now() / 300)) * playerAlpha;
+    ctx.strokeStyle = '#ff00ff';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.arc(playerX, playerY, CELL / 3 + 8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+}  // ← ЭТА скобка закрывает if (teleportPhase !== 1)
+}// ЗДЕСЬ НЕ ДОЛЖНО БЫТЬ ЕЩЁ ОДНОЙ СКОБКИ!
 
 function drawHexagon(x, y, size) {
   ctx.beginPath();
