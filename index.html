@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SPOON MAN v2.0</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div class="glow-effect"></div>
+  
+  <!-- ДЕТОНАТОР -->
+  <div id="detonatorIndicator">⚡ ДЕТОНАТОР АКТИВЕН [E] ⚡</div>
+  
+  <!-- ВЕРХНИЙ БЛОК -->
+  <div class="game-top-panel">
+    <!-- ЛЕВО: Статистика -->
+    <div class="stats-section">
+      <div class="stat-line">
+        <span class="stat-label">УРОВЕНЬ</span>
+        <span class="stat-value level-value" id="level">1</span>
+      </div>
+      <div class="stat-line">
+        <span class="stat-label">БОТЫ</span>
+        <span class="stat-value bots-value" id="bots">0</span>
+      </div>
+      <div class="stat-line">
+        <span class="stat-label">ОЧКИ</span>
+        <span class="stat-value score-value" id="score">0</span>
+      </div>
+    </div>
+    
+    <!-- ЦЕНТР: Таймер -->
+    <div class="timer-section">
+      <div class="timer-label">ВРЕМЯ</div>
+      <div class="timer-value" id="gameTimer">00:00</div>
+    </div>
+    
+    <!-- ПРАВО: Улучшения -->
+    <div class="upgrades-section">
+      <div class="upgrade-line">
+        <span class="upgrade-label">БОМБЫ</span>
+        <span class="upgrade-value bomb-value" id="bombCount">1</span>
+      </div>
+      <div class="upgrade-line">
+        <span class="upgrade-label">РАДИУС</span>
+        <span class="upgrade-value range-value" id="explosionRange">1</span>
+      </div>
+      <div class="upgrade-line">
+        <span class="upgrade-label">СКОРОСТЬ</span>
+        <span class="upgrade-value speed-value" id="speedLevel">1</span>
+      </div>
+    </div>
+  </div>
+  
+  <!-- КАНВАС -->
+  <canvas id="gameCanvas" width="600" height="480"></canvas>
+  
+  <!-- УПРАВЛЕНИЕ -->
+  <div class="controls">
+    <span class="key">WASD</span> или <span class="key">СТРЕЛКИ</span> – движение • 
+    <span class="key">ПРОБЕЛ</span> – бомба • 
+    <span class="key">E</span> – детонатор • 
+    <span class="key">ESC</span> – пауза
+  </div>
+
+  <!-- ПАУЗА -->
+  <div id="pauseMenu">
+    <div class="modal-content">
+      <div class="modal-title">ПАУЗА</div>
+      <div class="pause-stats">
+        <div class="pause-stat">
+          <span class="pause-stat-label">Текущий уровень:</span>
+          <span class="pause-stat-value" id="pauseLevel">1</span>
+        </div>
+        <div class="pause-stat">
+          <span class="pause-stat-label">Убито ботов:</span>
+          <span class="pause-stat-value" id="pauseKills">0</span>
+        </div>
+        <div class="pause-stat">
+          <span class="pause-stat-label">Очки:</span>
+          <span class="pause-stat-value" id="pauseScore">0</span>
+        </div>
+      </div>
+      <button class="btn" onclick="resumeGame()">ПРОДОЛЖИТЬ</button>
+      <button class="btn btn-alt" onclick="restartGame()">НАЧАТЬ ЗАНОВО</button>
+    </div>
+  </div>
+
+  <!-- МОДАЛЬНОЕ ОКНО -->
+  <div id="modal">
+    <div class="modal-content">
+      <div class="modal-title" id="modalTitle"></div>
+      <div class="modal-subtitle" id="scoreDisplay"></div>
+      <button class="btn" id="modalBtn"></button>
+    </div>
+  </div>
+
+  <!-- ПОДВАЛ -->
+  <div class="footer">
+    SPOON MAN v2.0 © 2024 | Минималистичный Bomberman
+  </div>
+
+  <!-- СКРИПТЫ -->
+  <script src="js/config.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
